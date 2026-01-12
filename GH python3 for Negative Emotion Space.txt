@@ -1,0 +1,127 @@
+#! python3
+import Rhino
+import random
+import math
+import clr
+
+# 라이노 문서 연결
+doc = Rhino.RhinoDoc.ActiveDoc
+
+# ------------------------------------------------------------------
+# 1. 데이터 준비 (Negative EEG Data)
+# ------------------------------------------------------------------
+neg_data = [
+    -520.0, 398.0, -201.0, -201.0, 398.0, -520.0, -25.2, 57.0, -11.9, -11.9, 
+    57.0, -25.2, -61.6, -7.52, -13.0, -13.0, -7.52, -61.6, 23.9, 21.0, 
+    4.16, 4.16, 21.0, 23.9, 20.3, 11.0, 7.3, 7.3, 11.0, 20.3, 
+    5.6, 12.0, 0.44, 0.44, 12.0, 5.6, -0.66, 16.9, 8.87, 8.87, 
+    16.9, -0.66, -11.6, 17.5, 4.71, 4.71, 17.5, -11.6, -8.32, 5.0, 
+    -20.4, -20.4, 5.0, -8.32, 10.1, -5.92, -0.27, -0.27, -5.92, 10.1, 
+    9.19, -4.68, -10.4, -10.4, -4.68, 9.19, -3.93, -6.65, 12.6, 12.6, 
+    -6.65, -3.93, -22.5, -11.3, -13.3, -13.3, -11.3, -22.5, -18.7, -9.84, 
+    15.7, 15.7, -9.84, -18.7, -8.55, 3.42, 6.74, 6.74, 3.42, -8.55, 
+    -7.94, -0.99, 14.2, 14.2, -0.99, -7.94, -14.2, -1.97, -3.98, -3.98
+]
+
+# ------------------------------------------------------------------
+# 2. 파라미터 설정
+# ------------------------------------------------------------------
+corridor_length = 500.0  
+corridor_width = 80.0    
+corridor_height = 80.0   
+corrosion_scale = 0.15   # 부식 강도 (0.1 ~ 0.3 추천)
+
+u_count = 200  
+v_count = 40   
+w_count = 40   
+
+# ------------------------------------------------------------------
+# 3. 공간 생성 및 부식 함수
+# ------------------------------------------------------------------
+def create_corroded_corridor():
+    # (A) 기본 박스 메시 생성
+    box = Rhino.Geometry.Box(Rhino.Geometry.BoundingBox(
+        Rhino.Geometry.Point3d(0, 0, 0),
+        Rhino.Geometry.Point3d(corridor_length, corridor_width, corridor_height)
+    ))
+    mesh = Rhino.Geometry.Mesh.CreateFromBox(box, u_count, v_count, w_count)
+    
+    # [중요] 노멀 벡터 미리 계산 
+    mesh.Normals.ComputeNormals()
+    
+    # (B) 부식 시뮬레이션
+    vertices = mesh.Vertices
+    normals = mesh.Normals
+    
+    data_len = len(neg_data)
+    
+    # Python 3 안전성을 위해 루프 방식 변경
+    for i in range(vertices.Count):
+        # [수정된 부분] vertices[i] 대신 Point3dAt(i) 사용
+        pt = vertices.Point3dAt(i)
+        
+        # 노멀 벡터 가져오기 (만약 인덱싱 에러나면 Vector3d로 변환)
+        try:
+            normal = normals[i]
+        except:
+            normal = Rhino.Geometry.Vector3d(0,0,1) # 예외처리
+
+        # 1. 위치 계산 (0.0 ~ 1.0)
+        t = pt.X / corridor_length
+        if t < 0: t = 0
+        if t >= 1: t = 0.99
+        
+        data_index = int(t * (data_len - 1))
+        eeg_intensity = abs(neg_data[data_index])
+        
+        # 2. 노이즈 및 변위 계산
+        noise = random.uniform(-1.0, 1.0)
+        displacement = noise * eeg_intensity * corrosion_scale
+        
+        # 3. 바닥 부분(Z < 5) 부식 완화
+        if pt.Z < 5.0: 
+            displacement *= 0.1 
+            
+        # 4. 새 위치 계산
+        # Rhino.Geometry.Point3d와 Vector3d 연산
+        new_pos = pt + (Rhino.Geometry.Vector3d(normal) * displacement)
+        
+        # [수정된 부분] 값 설정은 SetVertex 사용
+        vertices.SetVertex(i, new_pos)
+    
+    # (C) 마무리: 노멀 재계산 (부드러운 쉐이딩)
+    mesh.Normals.ComputeNormals()
+    mesh.Compact()
+    
+    # (D) Bake
+    attr = Rhino.DocObjects.ObjectAttributes()
+    attr.Name = "Corroded_Negative_Hall"
+    
+    try:
+        clr.AddReference("System.Drawing")
+        from System.Drawing import Color
+        attr.ObjectColor = Color.FromArgb(150, 50, 50) # 핏빛
+        attr.ColorSource = Rhino.DocObjects.ObjectColorSource.ColorFromObject
+    except:
+        pass
+    
+    doc.Objects.AddMesh(mesh, attr)
+
+# ------------------------------------------------------------------
+# 4. 실행
+# ------------------------------------------------------------------
+doc.Views.RedrawEnabled = False
+
+# 기존 객체 삭제
+objects_to_delete = []
+for obj in doc.Objects:
+    if obj.Name == "Corroded_Negative_Hall":
+        objects_to_delete.append(obj.Id)
+for id in objects_to_delete:
+    doc.Objects.Delete(id, True)
+
+# 생성 시작
+create_corroded_corridor()
+
+doc.Views.RedrawEnabled = True
+doc.Views.Redraw()
