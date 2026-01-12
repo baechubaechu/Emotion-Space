@@ -1,0 +1,131 @@
+#! python3
+import Rhino
+import math
+import clr
+import random
+
+# 라이노 문서 연결
+doc = Rhino.RhinoDoc.ActiveDoc
+
+# ------------------------------------------------------------------
+# 1. 데이터 준비 (Positive EEG Data)
+# ------------------------------------------------------------------
+# 긍정적 데이터: 값이 클수록 "확장"하려는 성질을 가짐
+pos_data = [
+    85.9, 361.0, 162.2, 262.2, 461.0, 558.0, 684.0, 352.0, 252.0, 684.0, 
+    126.6, 218.7, 333.5, 433.5, 218.7, 126.6, 114.0, 183.1, 211.9, 311.9, 
+    283.1, 114.0, 119.3, 127.2, 210.8, 310.8, 427.2, 519.3, 312.4, 225.7, 
+    105.4, 205.4, 325.7, 212.4, 130.7, 122.4, 188.4, 288.4, 122.4, 30.7, 
+    13.56, 102.4, 206.7, 306.7, 202.4, 103.5, 104.7, 117.5, 206.9, 306.9, 
+    417.5, 304.7, 205.6, 112.3, 100.4, 100.4, 112.3, 205.6, 307.3, 206.6, 
+    102.7, 102.7, 206.6, 307.3, 410.6, 305.3, 207.5, 107.5, 105.3, 110.6, 
+    104.0, 103.2, 113.9, 213.9, 303.2, 204.0, 123.4, 109.6, 113.0, 113.0, 
+    109.6, 123.4, 218.3, 308.3, 417.4, 517.4, 408.3, 318.3, 206.9, 103.1, 
+    106.6, 106.6, 103.1, 106.9, 107.4, 100.5, 116.5, 216.5, 300.5, 207.4
+]
+
+# ------------------------------------------------------------------
+# 2. 파라미터 설정 (Dramatic Settings)
+# ------------------------------------------------------------------
+corridor_length = 500.0  
+corridor_width = 80.0    
+corridor_height = 80.0   
+
+inflation_scale = 0.8     # 전체적인 팽창 강도 (기존보다 3~4배 강력하게)
+wave_frequency = 0.015    # 파장의 길이 (수치가 작을수록 파도가 길고 웅장해짐)
+
+# 부드러운 곡면을 위해 메쉬 해상도 증가
+u_count = 300  
+v_count = 80   
+w_count = 80   
+
+# ------------------------------------------------------------------
+# 3. 긍정적 공간 생성 함수 (Expansion & Uplift)
+# ------------------------------------------------------------------
+def create_positive_corridor():
+    # (A) 기본 박스 메시 생성
+    box = Rhino.Geometry.Box(Rhino.Geometry.BoundingBox(
+        Rhino.Geometry.Point3d(0, 0, 0),
+        Rhino.Geometry.Point3d(corridor_length, corridor_width, corridor_height)
+    ))
+    mesh = Rhino.Geometry.Mesh.CreateFromBox(box, u_count, v_count, w_count)
+    
+    mesh.Normals.ComputeNormals()
+    vertices = mesh.Vertices
+    normals = mesh.Normals
+    data_len = len(pos_data)
+    
+    # (B) 팽창 알고리즘 (Inflation Loop)
+    for i in range(vertices.Count):
+        pt = vertices.Point3dAt(i)
+        
+        try:
+            normal = normals[i]
+        except:
+            normal = Rhino.Geometry.Vector3d(0,0,1)
+
+        # 1. 데이터 매핑 (X축 = 시간)
+        t = pt.X / corridor_length
+        if t < 0: t = 0
+        if t >= 1: t = 0.99
+        
+        data_index = int(t * (data_len - 1))
+        # 긍정 데이터는 절대값으로 변환하여 무조건 '팽창'하게 만듦
+        eeg_energy = abs(pos_data[data_index]) 
+        
+        # 2.  Sine Wave 호흡 (Respiration)
+        # 단순히 커지는 게 아니라, 공간이 숨을 쉬듯 주기적으로 변함
+        breath_factor = math.sin(pt.X * wave_frequency) * 0.5 + 0.5 # 0.0 ~ 1.0 사이로 정규화
+        
+        # 3.  천장 융기 (Cathedral Effect)
+        # 바닥(Z=0)은 그대로 두고, 천장(Z=High)으로 갈수록 기하급수적으로 커짐
+        # pt.Z / 80.0 -> 높이 비율 (0~1)
+        vertical_bias = (pt.Z / corridor_height) ** 2.5 
+        
+        # 4. 최종 변위 계산
+        # 데이터강도 * 호흡 * 높이가중치 * 전체스케일
+        # 바닥 부분은 영향을 덜 받게 (+0.1은 최소한의 볼륨감)
+        displacement = eeg_energy * (breath_factor + 0.2) * (vertical_bias + 0.1) * inflation_scale
+        
+        # 5. 바닥 평탄화 (Walkability)
+        if pt.Z < 5.0: 
+            displacement *= 0.1
+        
+        # 6. 적용 (Normal 방향으로 밀어내기)
+        new_pos = pt + (Rhino.Geometry.Vector3d(normal) * displacement)
+        vertices.SetVertex(i, new_pos)
+    
+    # (C) 마무리: 부드러운 쉐이딩을 위한 노멀 재계산
+    mesh.Normals.ComputeNormals()
+    mesh.Compact()
+    
+    # (D) 레이어 및 색상
+    attr = Rhino.DocObjects.ObjectAttributes()
+    attr.Name = "Expanded_Positive_Space"
+    
+    try:
+        clr.AddReference("System.Drawing")
+        from System.Drawing import Color
+        attr.ObjectColor = Color.FromArgb(100, 200, 255) 
+        attr.ColorSource = Rhino.DocObjects.ObjectColorSource.ColorFromObject
+    except:
+        pass
+    
+    doc.Objects.AddMesh(mesh, attr)
+
+# ------------------------------------------------------------------
+# 4. 실행
+# ------------------------------------------------------------------
+doc.Views.RedrawEnabled = False
+
+objects_to_delete = []
+for obj in doc.Objects:
+    if obj.Name == "Expanded_Positive_Space":
+        objects_to_delete.append(obj.Id)
+for id in objects_to_delete:
+    doc.Objects.Delete(id, True)
+
+create_positive_corridor()
+
+doc.Views.RedrawEnabled = True
+doc.Views.Redraw()
